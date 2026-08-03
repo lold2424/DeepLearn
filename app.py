@@ -13,6 +13,7 @@
 
 import os
 import tempfile
+import threading
 
 import streamlit as st
 from ultralytics import YOLO
@@ -29,6 +30,10 @@ MODEL_PATH = "mini_seg_v3_best.pt"
 
 IMAGE_EXTS = ("jpg", "jpeg", "png")
 VIDEO_EXTS = ("mp4", "mov", "avi")
+
+# 여러 사용자가 동시에 무거운 작업(특히 영상)을 돌려서
+# 서버 자원이 겹치지 않도록 하는 전역 잠금 (같은 프로세스 안 모든 세션이 공유)
+_inference_lock = threading.Lock()
 
 
 @st.cache_resource
@@ -71,9 +76,15 @@ if uploaded_file is not None:
             st.image(image, use_container_width=True)
 
         with st.spinner("AI가 분석 중입니다..."):
-            results = model.predict(source=np.array(image), conf=conf_threshold, verbose=False)
-            result = results[0]
-            annotated_rgb = result.plot()[:, :, ::-1]  # BGR -> RGB
+            if not _inference_lock.acquire(blocking=False):
+                st.info("⏳ 다른 사용자가 분석 중입니다. 순서가 되면 자동으로 처리됩니다...")
+                _inference_lock.acquire(blocking=True)
+            try:
+                results = model.predict(source=np.array(image), conf=conf_threshold, verbose=False)
+                result = results[0]
+                annotated_rgb = result.plot()[:, :, ::-1]  # BGR -> RGB
+            finally:
+                _inference_lock.release()
 
         with col2:
             st.subheader("AI 분석 결과")
@@ -106,41 +117,48 @@ if uploaded_file is not None:
             tmp_in.write(uploaded_file.read())
             in_path = tmp_in.name
 
-        cap = cv2.VideoCapture(in_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 20
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if not _inference_lock.acquire(blocking=False):
+            st.info("⏳ 다른 사용자가 영상을 분석 중입니다. 순서가 되면 자동으로 시작됩니다...")
+            _inference_lock.acquire(blocking=True)
 
-        out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
+        try:
+            cap = cv2.VideoCapture(in_path)
+            fps = cap.get(cv2.CAP_PROP_FPS) or 20
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        progress = st.progress(0, text="영상 분석 중...")
-        frame_idx = 0
-        detected_summary = set()
+            out_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(out_path, fourcc, fps, (w, h))
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+            progress = st.progress(0, text="영상 분석 중...")
+            frame_idx = 0
+            detected_summary = set()
 
-            result = model.predict(source=frame, conf=conf_threshold, verbose=False)[0]
-            annotated = result.plot()  # BGR, cv2와 동일 색공간이라 그대로 사용
-            writer.write(annotated)
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-            if result.boxes is not None and len(result.boxes) > 0:
-                names = result.names
-                cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-                detected_summary.update(names[c] for c in cls_ids)
+                result = model.predict(source=frame, conf=conf_threshold, verbose=False)[0]
+                annotated = result.plot()  # BGR, cv2와 동일 색공간이라 그대로 사용
+                writer.write(annotated)
 
-            frame_idx += 1
-            if total_frames > 0:
-                progress.progress(min(frame_idx / total_frames, 1.0), text=f"분석 중... ({frame_idx}/{total_frames} 프레임)")
+                if result.boxes is not None and len(result.boxes) > 0:
+                    names = result.names
+                    cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+                    detected_summary.update(names[c] for c in cls_ids)
 
-        cap.release()
-        writer.release()
-        progress.empty()
+                frame_idx += 1
+                if total_frames > 0:
+                    progress.progress(min(frame_idx / total_frames, 1.0), text=f"분석 중... ({frame_idx}/{total_frames} 프레임)")
+
+            cap.release()
+            writer.release()
+            progress.empty()
+        finally:
+            _inference_lock.release()
 
         st.subheader("AI 분석 결과 영상")
         with open(out_path, "rb") as f:
