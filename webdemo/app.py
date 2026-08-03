@@ -26,7 +26,7 @@ import cv2
 # ============================================================
 st.set_page_config(page_title="치킨 박스 상태 인식 데모", page_icon="🍗", layout="centered")
 
-MODEL_PATH = "mini_seg_v3_best.pt"
+MODEL_PATH = "best.pt"
 
 IMAGE_EXTS = ("jpg", "jpeg", "png")
 VIDEO_EXTS = ("mp4", "mov", "avi")
