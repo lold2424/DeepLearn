@@ -23,7 +23,7 @@ import io
 # ============================================================
 st.set_page_config(page_title="치킨 박스 상태 인식 데모", page_icon="🍗", layout="centered")
 
-MODEL_PATH = "best.pt"  # 레포 루트에 이 이름으로 모델 파일을 같이 올려두세요
+MODEL_PATH = "mini_seg_v3_best.pt"
 
 
 @st.cache_resource
